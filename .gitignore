@@ -1,0 +1,28 @@
+__pycache__/
+.pytest_cache/
+.venv/
+env/
+venv/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
+*.sqlite3
+/.mypy_cache/
+/.ruff_cache/
+/terminals/
+
+# VSCode / IDE
+.vscode/
+.idea/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+# Local data
+/sample_files/*.xlsx
+
+
