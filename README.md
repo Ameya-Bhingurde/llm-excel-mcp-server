@@ -1,5 +1,5 @@
 
-=======
+
 ## LLM-Driven Excel Automation MCP Server
 
 Production-style personal project that exposes Excel automation capabilities to LLMs via an MCP (Model Context Protocol) server and a FastAPI HTTP API. The system lets an LLM safely load, clean, profile, and transform Excel workbooks – locally and when deployed on Render’s free tier.
