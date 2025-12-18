@@ -1,47 +1,37 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import time
 
 import httpx
+import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
+# Import Plotly - Explicit Try/Except with Logging
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
-API_BASE_URL = "http://localhost:8000"
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+API_BASE_URL = "http://localhost:8001"
 SAMPLE_DIR = Path(__file__).resolve().parent.parent / "sample_files"
 
 
-def call_api(
-    path: str,
-    sheet: str,
-    operation: str,
-    index: Optional[List[str]] = None,
-    values: Optional[List[str]] = None,
-    aggfunc: str = "sum",
-    cell: Optional[str] = None,
-    formula: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Invoke the FastAPI backend for the given operation."""
+# -----------------------------------------------------------------------------
+# UTILS
+# -----------------------------------------------------------------------------
 
-    endpoint_map = {
-        "Profile Excel": "/mcp/profile-excel",
-        "Clean Excel": "/mcp/clean-excel",
-        "Create Pivot Table": "/mcp/create-pivot-table",
-        "Insert Formula": "/mcp/insert-formula",
-    }
-    url = API_BASE_URL + endpoint_map[operation]
-
-    payload: Dict[str, Any] = {"path": path, "sheet": sheet}
-
-    if operation == "Create Pivot Table":
-        payload["index"] = index or []
-        payload["values"] = values or []
-        payload["aggfunc"] = aggfunc or "sum"
-    elif operation == "Insert Formula":
-        payload["cell"] = cell
-        payload["formula"] = formula
-
+def call_api(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"{API_BASE_URL}{endpoint}"
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=60.0) as client:
             resp = client.post(url, json=payload)
     except httpx.RequestError as exc:
         return {
@@ -51,372 +41,414 @@ def call_api(
         }
 
     if resp.headers.get("content-type", "").startswith("application/json"):
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": resp.text}
     else:
         data = {"raw": resp.text}
 
     if not resp.is_success:
-        return {
-            "error": f"HTTP {resp.status_code}",
-            "details": data,
-        }
+        detail = data.get("detail", data) if isinstance(data, dict) else data
+        return {"error": f"HTTP {resp.status_code}", "details": detail}
 
     return data
 
 
 def save_uploaded_file(uploaded_file) -> str:
-    """
-    Save the uploaded Excel file into the sample_files directory.
-
-    Returns the relative path used by the backend APIs.
-    """
-
     SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
     target = SAMPLE_DIR / uploaded_file.name
     with target.open("wb") as f:
         f.write(uploaded_file.getbuffer())
-    # Backend expects paths relative to sample_files/
     return uploaded_file.name
 
 
-def main() -> None:
-    st.set_page_config(
-        page_title="LLM-Driven Excel Automation",
-        page_icon="📊",
-        layout="wide",
-    )
+# -----------------------------------------------------------------------------
+# THEME & AESTHETICS (ANTIGRAVITY V2)
+# -----------------------------------------------------------------------------
 
-    # Initialize session state
-    if "selected_operation" not in st.session_state:
-        st.session_state.selected_operation = None
-
-    # ========================================================================
-    # CSS STYLING - Railway-inspired dark theme with ambient background
-    # ========================================================================
+def inject_theme():
+    # CSS: Transparent backgrounds to allow the Spotlight to shine through
     st.markdown(
         """
         <style>
-        /* Railway-style dark background with subtle gradient and dot grid */
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap');
+        
+        /* Force transparency on main app containers so the fixed background is visible */
         .stApp {
-            background: 
-                radial-gradient(circle at 20% 30%, rgba(67, 56, 202, 0.15) 0%, transparent 50%),
-                radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.12) 0%, transparent 50%),
-                linear-gradient(180deg, #0a0e1a 0%, #0f172a 50%, #0a0e1a 100%);
-            background-attachment: fixed;
-            color: #e5e7eb;
+            background-color: transparent !important;
         }
         
-        /* Subtle dot grid overlay */
-        .stApp::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background-image: 
-                radial-gradient(circle at 1px 1px, rgba(148, 163, 184, 0.15) 1px, transparent 0);
-            background-size: 40px 40px;
-            pointer-events: none;
-            opacity: 0.4;
-            z-index: 0;
+        [data-testid="stHeader"] {
+            background-color: transparent !important;
+        }
+
+        /* Typography */
+        html, body, [class*="css"] {
+            font-family: 'Outfit', sans-serif;
+            color: #e2e8f0;
+        }
+
+        /* Input styling */
+        .stTextInput > div > div > input, 
+        .stMultiSelect > div > div > div, 
+        .stSelectbox > div > div > div,
+        .stTextArea > div > div > textarea {
+            background-color: rgba(20, 20, 25, 0.7) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            color: white !important;
+            border-radius: 10px;
         }
         
-        /* Soft glow effect behind main content */
-        .main-content-wrapper {
-            position: relative;
-            z-index: 1;
+        /* Glass Card */
+        .glass-card {
+            background: rgba(13, 13, 16, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
         }
-        
-        /* Header styling */
-        h1 {
-            color: #ffffff;
-            font-weight: 600;
-            letter-spacing: -0.02em;
-        }
-        
-        /* Subtitle styling */
-        .subtitle {
-            color: #9ca3af;
-            font-size: 0.95rem;
-            font-weight: 400;
-        }
-        
-        /* Section heading */
-        h3 {
-            color: #f3f4f6;
-            font-weight: 500;
-            margin-top: 2rem;
-            margin-bottom: 1rem;
-        }
-        
-        /* Card-style action buttons */
+
+        /* Primary Button */
         .stButton > button {
-            background: rgba(15, 23, 42, 0.6) !important;
-            border: 1px solid rgba(30, 41, 59, 0.8) !important;
-            border-radius: 12px !important;
-            padding: 1.5rem !important;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            height: auto !important;
-            min-height: 160px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            text-align: left !important;
-            white-space: normal !important;
-            line-height: 1.6 !important;
-            font-size: 1rem !important;
-            color: #e5e7eb !important;
-            display: flex !important;
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            justify-content: flex-start !important;
-        }
-        
-        .stButton > button:hover {
-            border-color: rgba(99, 102, 241, 0.6) !important;
-            background: rgba(15, 23, 42, 0.8) !important;
-            box-shadow: 0 8px 16px rgba(99, 102, 241, 0.2) !important;
-            transform: translateY(-2px);
-        }
-        
-        .stButton > button[type="primary"] {
-            border-color: #6366f1 !important;
-            background: rgba(30, 41, 59, 0.9) !important;
-            box-shadow: 0 8px 24px rgba(99, 102, 241, 0.4) !important;
-        }
-        
-        .stButton > button[type="secondary"] {
-            background: rgba(15, 23, 42, 0.6) !important;
-            color: #e5e7eb !important;
-        }
-        
-        /* Style bold text in buttons */
-        .stButton > button strong {
-            color: #ffffff !important;
-            font-size: 1.1rem !important;
-            font-weight: 600 !important;
-            display: block;
-            margin: 0.5rem 0;
-        }
-        
-        /* Form inputs styling */
-        .stTextInput > div > div > input {
-            background-color: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(30, 41, 59, 0.8);
-            color: #e5e7eb;
-        }
-        
-        .stTextInput > div > div > input:focus {
-            border-color: #6366f1;
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-        }
-        
-        /* File uploader styling */
-        .stFileUploader > div {
-            background-color: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(30, 41, 59, 0.8);
-            border-radius: 8px;
-        }
-        
-        /* Primary button styling */
-        .stButton > button[type="primary"] {
-            background: #6366f1;
-            color: white;
+            background: linear-gradient(90deg, #7c3aed, #db2777);
             border: none;
-            border-radius: 8px;
             padding: 0.75rem 1.5rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
+            border-radius: 12px;
+            font-weight: 600;
+            color: white;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.4);
+        }
+        .stButton > button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(219, 39, 119, 0.6);
         }
         
-        .stButton > button[type="primary"]:hover {
-            background: #4f46e5;
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        /* Remove Sidebar if any remains */
+        [data-testid="stSidebar"] {
+            display: none;
         }
-        
-        /* Code block styling */
-        .stCodeBlock {
-            background-color: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(30, 41, 59, 0.8);
-        }
-        
-        /* Success/Error messages */
-        .stSuccess {
-            background-color: rgba(16, 185, 129, 0.1);
-            border-left: 4px solid #10b981;
-        }
-        
-        .stError {
-            background-color: rgba(239, 68, 68, 0.1);
-            border-left: 4px solid #ef4444;
+
+        /* H1 Gradient */
+        h1 {
+            background: linear-gradient(to right, #c4b5fd, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 3.5rem;
+            font-weight: 700;
         }
         </style>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
-    # ========================================================================
-    # HEADER SECTION
-    # ========================================================================
-    st.markdown(
-        """
-        <div class="main-content-wrapper" style="text-align: center; margin-top: 3rem; margin-bottom: 3rem;">
-            <h1 style="margin-bottom: 0.5rem;">LLM-Driven Excel Automation</h1>
-            <p class="subtitle">Safely automate Excel workflows using deterministic tools</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # JS: The Spotlight Effect
+    spotlight_script = """
+    <script>
+    (function() {
+        const doc = window.parent.document;
+        
+        const old = doc.getElementById('spotlight-canvas');
+        if (old) old.remove();
 
-    # ========================================================================
-    # FILE UPLOAD SECTION
-    # ========================================================================
-    uploaded_file = st.file_uploader(
-        "Upload an Excel file (.xlsx)",
-        type=["xlsx"],
-        help="File will be stored temporarily under the server's sample_files/ directory.",
-    )
+        const canvas = doc.createElement('div');
+        canvas.id = 'spotlight-canvas';
+        canvas.style.position = 'fixed';
+        canvas.style.top = '0';
+        canvas.style.left = '0';
+        canvas.style.width = '100vw';
+        canvas.style.height = '100vh';
+        canvas.style.zIndex = '-1';
+        canvas.style.background = '#020205'; // Deep black base
+        canvas.style.pointerEvents = 'none';
+        
+        const glow = doc.createElement('div');
+        glow.style.position = 'absolute';
+        glow.style.width = '800px';
+        glow.style.height = '800px';
+        glow.style.borderRadius = '50%';
+        glow.style.background = 'radial-gradient(circle, rgba(139, 92, 246, 0.25) 0%, rgba(0,0,0,0) 70%)';
+        glow.style.transform = 'translate(-50%, -50%)';
+        glow.style.pointerEvents = 'none';
+        glow.style.transition = 'opacity 0.5s ease';
+        
+        canvas.appendChild(glow);
+        doc.body.appendChild(canvas);
 
-    # ========================================================================
-    # ACTION SELECTION SECTION - Card-style buttons in 2x2 grid
-    # ========================================================================
-    st.markdown("### Choose an action")
+        doc.addEventListener('mousemove', (e) => {
+            glow.style.left = e.clientX + 'px';
+            glow.style.top = e.clientY + 'px';
+        });
+    })();
+    </script>
+    """
+    components.html(spotlight_script, height=0, width=0)
 
-    # Define action cards with icon, title, and description
-    actions = [
-        {
-            "key": "Clean Excel",
-            "icon": "🧹",
-            "title": "Clean Excel",
-            "description": "Remove empty rows and normalise column names and data types.",
-        },
-        {
-            "key": "Create Pivot Table",
-            "icon": "📊",
-            "title": "Create Pivot Table",
-            "description": "Aggregate data by index and value columns into a pivot table.",
-        },
-        {
-            "key": "Profile Excel",
-            "icon": "📋",
-            "title": "Profile Excel",
-            "description": "Summarise rows, columns, and missing values.",
-        },
-        {
-            "key": "Insert Formula",
-            "icon": "✏️",
-            "title": "Insert Formula",
-            "description": "Write an Excel formula into a specific cell.",
-        },
-    ]
 
-    # Create 2x2 grid layout
-    col1, col2 = st.columns(2, gap="medium")
+# -----------------------------------------------------------------------------
+# MAIN APP
+# -----------------------------------------------------------------------------
 
-    with col1:
-        for action in actions[:2]:
-            is_selected = st.session_state.selected_operation == action["key"]
-            
-            # Multi-line button label with icon, title, and description
-            button_label = f"{action['icon']}\n\n**{action['title']}**\n\n{action['description']}"
-            
-            if st.button(
-                button_label,
-                key=f"btn_{action['key'].replace(' ', '_')}",
-                use_container_width=True,
-                type="primary" if is_selected else "secondary",
-            ):
-                st.session_state.selected_operation = action["key"]
-                st.rerun()
+def main():
+    st.set_page_config(page_title="AutoXL", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
+    inject_theme()
 
-    with col2:
-        for action in actions[2:]:
-            is_selected = st.session_state.selected_operation == action["key"]
-            
-            # Multi-line button label with icon, title, and description
-            button_label = f"{action['icon']}\n\n**{action['title']}**\n\n{action['description']}"
-            
-            if st.button(
-                button_label,
-                key=f"btn_{action['key'].replace(' ', '_')}",
-                use_container_width=True,
-                type="primary" if is_selected else "secondary",
-            ):
-                st.session_state.selected_operation = action["key"]
-                st.rerun()
+    # -- Header Section (Centered) --
+    
+    st.markdown("<div style='text-align: center; margin-bottom: 2rem;'><h1>AutoXL</h1><p style='color: #94a3b8;'>Intelligent Data Automation</p></div>", unsafe_allow_html=True)
+    
+    # Center the uploader
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        uploaded_file = st.file_uploader("Upload an Excel file (.xlsx)", type="xlsx", label_visibility="visible")
 
-    # ========================================================================
-    # DYNAMIC FORM SECTION - Based on selected operation
-    # ========================================================================
-    operation = st.session_state.selected_operation
+    if not uploaded_file:
+        # Welcome / Empty State
+        st.markdown(
+            """
+            <div class='glass-card' style='text-align: center; margin-top: 4rem; border: 1px dashed rgba(255,255,255,0.1);'>
+                <h2 style='color: #c4b5fd;'>Ready to Excelerate?</h2>
+                <p style='font-size: 1.2rem; color: #94a3b8;'>
+                    Upload your spreadsheet above to unlock intelligent analysis.<br>
+                    Try the new <strong>Auto-QA</strong> feature to chat with your data.
+                </p>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+        return
 
-    if operation:
-        st.markdown(f"**Selected:** {operation}")
-        st.markdown("---")
+    # -- Processing --
+    try:
+        rel_path = save_uploaded_file(uploaded_file)
+        if "file_path" not in st.session_state or st.session_state.file_path != rel_path:
+            st.session_state.file_path = rel_path
+            st.session_state.sheet_name = "Sales"
+            st.session_state.analyze_result = None
+            st.session_state.clean_summary = None
+            st.session_state.pivot_data = None
+    except Exception as e:
+        st.error(f"Error saving file: {e}")
+        return
 
-        sheet_name = st.text_input("Sheet name", value="Sales")
+    # -- Main Tabs --
+    tabs = st.tabs(["📊 Visual Analysis", "🌪️ Smart Pivot", "🧪 Smart Formula", "🧹 Data Cleanup"])
 
-        index_cols: List[str] = []
-        value_cols: List[str] = []
-        aggfunc = "sum"
-        cell = ""
-        formula = ""
+    # ------------------------------------------------
+    # 1. VISUAL ANALYSIS
+    # ------------------------------------------------
+    with tabs[0]:
+        st.markdown("### Interactive Insights")
+        
+        # Controls
+        with st.container():
+            col_in, col_btn = st.columns([3, 1])
+            sheet_in = col_in.text_input("Sheet Name", value=st.session_state.get("sheet_name", "Sales"), label_visibility="collapsed", placeholder="Sheet Name", key="viz_sheet")
+            if col_btn.button("Analyze Data", use_container_width=True):
+                with st.spinner("Analyzing structure..."):
+                    payload = {"path": st.session_state.file_path, "sheet": sheet_in}
+                    st.session_state.analyze_result = call_api("/mcp/analyze-data", payload)
 
-        if operation == "Create Pivot Table":
-            st.markdown("**Pivot configuration**")
-            index_raw = st.text_input("Index columns (comma-separated)", value="Region")
-            values_raw = st.text_input("Value columns (comma-separated)", value="Revenue")
-            aggfunc = st.text_input("Aggregation function", value="sum")
-            index_cols = [c.strip() for c in index_raw.split(",") if c.strip()]
-            value_cols = [c.strip() for c in values_raw.split(",") if c.strip()]
-        elif operation == "Insert Formula":
-            st.markdown("**Formula configuration**")
-            cell = st.text_input("Cell (e.g. E2)", value="E2")
-            formula = st.text_input("Formula (e.g. =C2*D2)", value="=C2*D2")
-
-        run_clicked = st.button("Run Selected Operation", type="primary", use_container_width=True)
-
-        # ========================================================================
-        # RESULTS SECTION
-        # ========================================================================
-        st.markdown("### Result")
-        result_placeholder = st.empty()
-
-        if run_clicked:
-            if uploaded_file is None:
-                result_placeholder.error("Please upload an Excel (.xlsx) file first.")
+        if st.session_state.analyze_result:
+            res = st.session_state.analyze_result
+            if "error" in res:
+                st.error(f"Analysis Error: {res.get('details', res['error'])}")
             else:
-                rel_path = save_uploaded_file(uploaded_file)
+                data = res.get("chart_data", {})
+                profile = data.get("profile", {})
+                
+                # Metrics
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Rows", profile.get("row_count", 0))
+                m2.metric("Columns", profile.get("column_count", 0))
+                numeric_cols = profile.get("numeric_columns", [])
+                categorical_cols = profile.get("categorical_columns", [])
+                m3.metric("Numeric", len(numeric_cols))
+                m4.metric("Categorical", len(categorical_cols))
 
-                with st.spinner("Running operation against backend..."):
-                    data = call_api(
-                        path=rel_path,
-                        sheet=sheet_name,
-                        operation=operation,
-                        index=index_cols,
-                        values=value_cols,
-                        aggfunc=aggfunc,
-                        cell=cell or None,
-                        formula=formula or None,
-                    )
+                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+                
+                # Chart Controls
+                cc1, cc2, cc3 = st.columns(3)
+                chart_type = cc1.selectbox("Chart Style", ["Bar", "Line", "Area", "Scatter", "Pie", "Donut"])
+                
+                all_cols = profile.get("columns", [])
+                
+                # Logic: If Pie/Donut, Y is numeric size, X is label
+                x_ax = cc2.selectbox("X Axis (Category)", all_cols, index=0 if all_cols else 0)
+                y_ax = cc3.selectbox("Y Axis (Value)", numeric_cols, index=0 if numeric_cols else 0)
+                
+                # Render
+                raw = data.get("data", [])
+                df_vis = pd.DataFrame(raw)
+                
+                if df_vis.empty:
+                    st.warning("No data rows available to plot.")
+                elif HAS_PLOTLY:
+                    fig = None
+                    colors = px.colors.sequential.Plotly3
+                    
+                    if chart_type == "Bar":
+                        fig = px.bar(df_vis, x=x_ax, y=y_ax, color=x_ax, template="plotly_dark", color_discrete_sequence=colors)
+                    elif chart_type == "Line":
+                        fig = px.line(df_vis, x=x_ax, y=y_ax, template="plotly_dark", markers=True)
+                        fig.update_traces(line_color="#c4b5fd")
+                    elif chart_type == "Area":
+                        fig = px.area(df_vis, x=x_ax, y=y_ax, template="plotly_dark")
+                        fig.update_traces(line_color="#ec4899")
+                    elif chart_type == "Scatter":
+                        fig = px.scatter(df_vis, x=x_ax, y=y_ax, color=x_ax, template="plotly_dark", size=y_ax)
+                    elif chart_type == "Pie":
+                        fig = px.pie(df_vis, names=x_ax, values=y_ax, template="plotly_dark", color_discrete_sequence=colors)
+                    elif chart_type == "Donut":
+                        fig = px.pie(df_vis, names=x_ax, values=y_ax, template="plotly_dark", hole=0.5, color_discrete_sequence=colors)
+                    
+                    if fig:
+                        fig.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)", 
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font_family="Outfit"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                if "error" in data:
-                    result_placeholder.error(data.get("error", "Unknown error"))
-                    st.code(json.dumps(data, indent=2), language="json")
+    # ------------------------------------------------
+    # 2. SMART PIVOT
+    # ------------------------------------------------
+    with tabs[1]:
+        st.markdown("### Pivot Builder")
+        
+        c1, c2, c3 = st.columns([2, 5, 2])
+        p_sheet = c1.text_input("Sheet", value="Sales", key="psheet")
+        
+        known = []
+        if st.session_state.analyze_result:
+             known = st.session_state.analyze_result.get("chart_data", {}).get("profile", {}).get("columns", [])
+        
+        if known:
+            p_idx = c2.multiselect("Rows", known, placeholder="Select index columns")
+            p_val = c2.multiselect("Values", known, placeholder="Select value columns")
+        else:
+            p_idx = c2.text_input("Rows (comma separated)", "Region").split(",")
+            p_val = c2.text_input("Values (comma separated)", "Revenue").split(",")
+            p_idx = [x.strip() for x in p_idx if x.strip()]
+            p_val = [x.strip() for x in p_val if x.strip()]
+
+        p_agg = c3.selectbox("Function", ["sum", "mean", "count", "min", "max"])
+        
+        if st.button("Generate Pivot", type="primary"):
+            payload = {
+                "path": st.session_state.file_path,
+                "sheet": p_sheet,
+                "index": p_idx,
+                "values": p_val,
+                "aggfunc": p_agg
+            }
+            with st.spinner("Pivoting..."):
+                st.session_state.pivot_data = call_api("/mcp/create-pivot-table", payload)
+        
+        if st.session_state.pivot_data:
+            res = st.session_state.pivot_data
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+                df_p = pd.DataFrame(res.get("full_data", []))
+                st.dataframe(df_p, use_container_width=True)
+                csv = df_p.to_csv(index=False).encode('utf-8')
+                st.download_button("Download CSV", csv, "pivot.csv", "text/csv")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+    # ------------------------------------------------
+    # 3. SMART FORMULA
+    # ------------------------------------------------
+    with tabs[2]:
+        st.markdown("### AI Formula Generator")
+        
+        with st.container():
+            c1, c2 = st.columns([1, 1])
+            f_sheet = c1.text_input("Sheet", value="Sales", key="fsheet")
+            f_cell = c2.text_input("Target Cell", value="E2")
+            
+            f_intent = st.text_area("What should happen in this cell?", height=100, placeholder="Example: Multiply Quantity by Unit Price")
+            
+            if st.button("Generate & Insert", type="primary", key="f_btn"):
+                if not f_intent:
+                    st.warning("Please enter instructions.")
                 else:
-                    result_placeholder.success("Operation completed successfully.")
-                    st.code(json.dumps(data, indent=2), language="json")
-
-                    # For operations that modify the workbook, offer a download link
-                    if operation in {"Clean Excel", "Insert Formula"}:
-                        target = SAMPLE_DIR / rel_path
+                    payload = {"path": st.session_state.file_path, "sheet": f_sheet, "cell": f_cell, "intent": f_intent}
+                    with st.spinner("Thinking..."):
+                        res = call_api("/mcp/insert-formula", payload)
+                    
+                    if "error" in res:
+                        st.error(f"Failed: {res.get('details', res['error'])}")
+                    else:
+                        meta = res.get("metadata", {})
+                        formula = meta.get("formula", "???")
+                        # Also check if we got a calculated answer
+                        calculated_value = meta.get("calculated_value", None)
+                        
+                        st.markdown(
+                            f"""
+                            <div class='glass-card' style='border-left: 5px solid #10b981;'>
+                                <h3 style='color: #10b981; margin: 0;'>Formula Generated</h3>
+                                <code style='font-size: 1.5rem; display: block; margin: 1rem 0;'>{formula}</code>
+                                <p>Inserted into <strong>{f_cell}</strong></p>
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                        
+                        # Show calculated result if available
+                        if calculated_value:
+                             st.markdown(
+                                f"""
+                                <div class='glass-card' style='border-left: 5px solid #ec4899; margin-top: 1rem;'>
+                                    <h3 style='color: #ec4899; margin: 0;'>Projected Answer</h3>
+                                    <p style='font-size: 1.2rem; color: white;'>The result of this formula would be: <strong>{calculated_value}</strong></p>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                        
+                        target = SAMPLE_DIR / st.session_state.file_path
                         if target.exists():
-                            with target.open("rb") as f:
-                                st.download_button(
-                                    label="Download updated Excel file",
-                                    data=f.read(),
-                                    file_name=uploaded_file.name,
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                )
-    else:
-        st.info("👆 Select an action above to get started.")
+                             with target.open("rb") as f:
+                                st.download_button("Download Updated File", f.read(), f"updated_{st.session_state.file_path}")
+
+    # ------------------------------------------------
+    # 4. CLEANUP
+    # ------------------------------------------------
+    with tabs[3]:
+        st.markdown("### Intelligent Cleanup")
+        c_sheet = st.text_input("Sheet to Clean", value="Sales", key="csheet")
+        
+        if st.button("Clean Data", type="primary"):
+            with st.spinner("Scrubbing..."):
+                st.session_state.clean_summary = call_api("/mcp/clean-excel", {"path": st.session_state.file_path, "sheet": c_sheet})
+        
+        if st.session_state.clean_summary:
+            res = st.session_state.clean_summary
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                summ = res.get("cleaning_summary", {})
+                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+                st.success("Cleanup Successful")
+                sc1, sc2, sc3 = st.columns(3)
+                sc1.metric("Rows Removed", summ.get("rows_removed", 0))
+                sc2.metric("Final Rows", summ.get("final_rows", 0))
+                
+                target = SAMPLE_DIR / st.session_state.file_path
+                if target.exists():
+                     with target.open("rb") as f:
+                        st.download_button("Download Cleaned File", f.read(), f"cleaned_{st.session_state.file_path}")
+                st.markdown("</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

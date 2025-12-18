@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     port: int = Field(default=10000)
 
     # LLM / demo client
-    ollama_base_url: str = Field(default="http://localhost:11434")
-    ollama_model: str = Field(default="llama3")
+    ollama_base_url: str = Field(default="http://127.0.0.1:11434")
+    ollama_model: str = Field(default="tinyllama")
 
     class Config:
         env_file = ".env"

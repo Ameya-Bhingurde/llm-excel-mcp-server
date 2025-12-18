@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,9 @@ class CleanExcelRequest(ExcelRequestBase):
 
 class ProfileExcelRequest(ExcelRequestBase):
     pass
+    
+class AnalyzeDataRequest(ExcelRequestBase):
+    pass
 
 
 class PivotTableRequest(ExcelRequestBase):
@@ -26,18 +29,25 @@ class PivotTableRequest(ExcelRequestBase):
 
 class InsertFormulaRequest(ExcelRequestBase):
     cell: str = Field(..., description="Cell reference such as 'D2'")
-    formula: str = Field(..., description="Excel formula string, e.g. '=A1+B1'")
+    formula: Optional[str] = Field(None, description="Explicit Excel formula")
+    intent: Optional[str] = Field(None, description="Natural language intent to generate formula")
+
+
+class QueryDataRequest(ExcelRequestBase):
+    query: str = Field(..., description="Natural language question about the data")
 
 
 class ExcelOperationResponse(BaseModel):
     success: bool
     message: str
-    data_preview: Optional[list[Dict[str, Any]]] = None
+    data_preview: Optional[List[Dict[str, Any]]] = None
     metadata: Optional[Dict[str, Any]] = None
+    # Enhanced fields for "Smart" UI
+    cleaning_summary: Optional[Dict[str, Any]] = None  # For Clean Tool
+    chart_data: Optional[Dict[str, Any]] = None        # For Analyze Tool
+    qa_result: Optional[str] = None                    # For Query Tool
 
 
 class HealthResponse(BaseModel):
     status: str
     app: str
-
-
