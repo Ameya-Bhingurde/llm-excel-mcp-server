@@ -2,8 +2,10 @@
 services:
   - type: web
     name: autoxl
-    env: docker
+    env: python
     plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: OLLAMA_BASE_URL

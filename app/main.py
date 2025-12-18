@@ -34,6 +34,23 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok", app=settings.app_name)
 
 
+@app.get("/")
+def root():
+    return {
+        "message": "LLM Excel MCP Server is running",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "clean_excel": "/mcp/clean-excel",
+            "analyze_data": "/mcp/analyze-data",
+            "create_pivot": "/mcp/create-pivot-table",
+            "insert_formula": "/mcp/insert-formula",
+            "query_data": "/mcp/query-data"
+        }
+    }
+
+
+
 @app.post("/mcp/clean-excel", response_model=ExcelOperationResponse)
 def clean_excel_endpoint(payload: CleanExcelRequest) -> ExcelOperationResponse:
     path = ensure_path_within_workspace(payload.path)
