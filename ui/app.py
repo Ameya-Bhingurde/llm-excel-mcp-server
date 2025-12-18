@@ -3,11 +3,26 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import time
+import sys
 
-import httpx
+# Add parent directory to path to import from app module
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
+# Import Excel operations directly
+from app.excel_ops import (
+    load_excel,
+    clean_sheet,
+    profile_data,
+    prepare_chart_data,
+    create_pivot_table as create_pivot,
+    insert_formula as insert_formula_to_excel,
+    save_excel
+)
+from app.llm_service import generate_formula_from_intent
 
 # Import Plotly - Explicit Try/Except with Logging
 try:
@@ -20,40 +35,12 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_BASE_URL = "http://127.0.0.1:8001"
 SAMPLE_DIR = Path(__file__).resolve().parent.parent / "sample_files"
 
 
 # -----------------------------------------------------------------------------
 # UTILS
 # -----------------------------------------------------------------------------
-
-def call_api(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    url = f"{API_BASE_URL}{endpoint}"
-    try:
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(url, json=payload)
-    except httpx.RequestError as exc:
-        return {
-            "error": "Connection error",
-            "details": str(exc),
-            "hint": f"Is the FastAPI server running at {API_BASE_URL}?",
-        }
-
-    if resp.headers.get("content-type", "").startswith("application/json"):
-        try:
-            data = resp.json()
-        except Exception:
-            data = {"raw": resp.text}
-    else:
-        data = {"raw": resp.text}
-
-    if not resp.is_success:
-        detail = data.get("detail", data) if isinstance(data, dict) else data
-        return {"error": f"HTTP {resp.status_code}", "details": detail}
-
-    return data
-
 
 def save_uploaded_file(uploaded_file) -> str:
     SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
@@ -250,8 +237,19 @@ def main():
             sheet_in = col_in.text_input("Sheet Name", value=st.session_state.get("sheet_name", "Sales"), label_visibility="collapsed", placeholder="Sheet Name", key="viz_sheet")
             if col_btn.button("Analyze Data", use_container_width=True):
                 with st.spinner("Analyzing structure..."):
-                    payload = {"path": st.session_state.file_path, "sheet": sheet_in}
-                    st.session_state.analyze_result = call_api("/mcp/analyze-data", payload)
+                    try:
+                        file_path = SAMPLE_DIR / st.session_state.file_path
+                        df = load_excel(file_path, sheet_in)
+                        chart_data = prepare_chart_data(df)
+                        st.session_state.analyze_result = {
+                            "success": True,
+                            "chart_data": chart_data
+                        }
+                    except Exception as e:
+                        st.session_state.analyze_result = {
+                            "error": "Analysis failed",
+                            "details": str(e)
+                        }
 
         if st.session_state.analyze_result:
             res = st.session_state.analyze_result
@@ -342,15 +340,19 @@ def main():
         p_agg = c3.selectbox("Function", ["sum", "mean", "count", "min", "max"])
         
         if st.button("Generate Pivot", type="primary"):
-            payload = {
-                "path": st.session_state.file_path,
-                "sheet": p_sheet,
-                "index": p_idx,
-                "values": p_val,
-                "aggfunc": p_agg
-            }
             with st.spinner("Pivoting..."):
-                st.session_state.pivot_data = call_api("/mcp/create-pivot-table", payload)
+                try:
+                    file_path = SAMPLE_DIR / st.session_state.file_path
+                    df = load_excel(file_path, p_sheet)
+                    pivot_df = create_pivot(df, index=p_idx, values=p_val, aggfunc=p_agg)
+                    st.session_state.pivot_data = {
+                        "success": True,
+                        "full_data": pivot_df.to_dict(orient="records")
+                    }
+                except Exception as e:
+                    st.session_state.pivot_data = {
+                        "error": f"Pivot failed: {str(e)}"
+                    }
         
         if st.session_state.pivot_data:
             res = st.session_state.pivot_data
@@ -381,9 +383,22 @@ def main():
                 if not f_intent:
                     st.warning("Please enter instructions.")
                 else:
-                    payload = {"path": st.session_state.file_path, "sheet": f_sheet, "cell": f_cell, "intent": f_intent}
                     with st.spinner("Thinking..."):
-                        res = call_api("/mcp/insert-formula", payload)
+                        try:
+                            file_path = SAMPLE_DIR / st.session_state.file_path
+                            df = load_excel(file_path, f_sheet)
+                            schema = list(df.columns)
+                            formula = generate_formula_from_intent(f_intent, schema, f_cell)
+                            if formula:
+                                insert_formula_to_excel(file_path, f_sheet, f_cell, formula)
+                                res = {
+                                    "success": True,
+                                    "metadata": {"formula": formula, "calculated_value": None}
+                                }
+                            else:
+                                res = {"error": "Could not generate formula"}
+                        except Exception as e:
+                            res = {"error": f"Formula generation failed: {str(e)}"}
                     
                     if "error" in res:
                         st.error(f"Failed: {res.get('details', res['error'])}")
@@ -430,7 +445,19 @@ def main():
         
         if st.button("Clean Data", type="primary"):
             with st.spinner("Scrubbing..."):
-                st.session_state.clean_summary = call_api("/mcp/clean-excel", {"path": st.session_state.file_path, "sheet": c_sheet})
+                try:
+                    file_path = SAMPLE_DIR / st.session_state.file_path
+                    df = load_excel(file_path, c_sheet)
+                    cleaned_df, summary = clean_sheet(df)
+                    save_excel(cleaned_df, file_path, c_sheet)
+                    st.session_state.clean_summary = {
+                        "success": True,
+                        "cleaning_summary": summary
+                    }
+                except Exception as e:
+                    st.session_state.clean_summary = {
+                        "error": f"Cleaning failed: {str(e)}"
+                    }
         
         if st.session_state.clean_summary:
             res = st.session_state.clean_summary
