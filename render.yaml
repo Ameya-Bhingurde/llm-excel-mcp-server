@@ -1,0 +1,12 @@
+# Render deployment configuration
+services:
+  - type: web
+    name: autoxl
+    env: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: OLLAMA_BASE_URL
+        value: http://127.0.0.1:11434
+      - key: OLLAMA_MODEL
+        value: tinyllama
