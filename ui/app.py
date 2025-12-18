@@ -201,7 +201,7 @@ def main():
                 <h2 style='color: #c4b5fd;'>Ready to Excelerate?</h2>
                 <p style='font-size: 1.2rem; color: #94a3b8;'>
                     Upload your spreadsheet above to unlock intelligent analysis.<br>
-                    Try the new <strong>Auto-QA</strong> feature to chat with your data.
+                    Visualize data, create pivots, generate formulas, and clean your sheets with AI.
                 </p>
             </div>
             """, 
